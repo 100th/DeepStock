@@ -60,6 +60,7 @@ class Agent:
         self.ratio_hold = 0  # 주식 보유 비율 (현재 보유 주식 수 / 최대 보유 주식 수)
         self.ratio_portfolio_value = 0  # 포트폴리오 가치 비율. 직전 지연 보상이 발생했을 때의 포트폴리오 가치 대비 현재 포트폴리오 가치 비율
 
+    # Agent 클래스의 함수 : Get/Set 함수
     # 학습 단계에서 한 에포크마다 에이전트의 상태를 초기화해야 함.
     def reset(self):
         self.balance = self.initial_balance
@@ -98,6 +99,7 @@ class Agent:
             self.ratio_portfolio_value
         )
 
+    # Agent 클래스의 함수 : 행동 결정 및 유효성 검사 함수
     # 에이전트가 행동을 결정하고 결정한 행동의 유효성을 검사하는 함수를 보여줌
     # 입력으로 들어온 epsilon의 확률로 무작위로 행동을 결정하고, 그렇지 않은 경우에 정책 신경망을 통해 행동을 결정
     def decide_action(self, policy_network, sample, epsilon):
@@ -118,10 +120,18 @@ class Agent:
             confidence = probs[action]
         return action, confidence, exploration
 
+    # '신용 매수', '공매도'는 고려 안한다.
+    # 신용 매수 : 잔금이 부족하더라도 돈을 빌려서 매수를 하는 것
+    # 공매도 : 주식을 보유하지 않고 있더라도 미리 매도하고 나중에 주식을 사서 갚는 방식의 거래
+
+    # 이렇게 결정한 행동은 특정 상황에서는 수행할 수 없을 수도 있다.
+    # 예를 들어, 매수를 결정했는데 잔금이 1주를 매수하기에도 부족한 경우
+    # 매도를 결정했는데 보유하고 있는 주식이 하나도 없는 경우에 결정한 행동을 수행할 수 없다.
+    # 그래서 결정한 행동을 수행할 수 있는지를 확인하기 위해 validate_action() 함수를 사용.
     def validate_action(self, action):
         validity = True
         if action == Agent.ACTION_BUY:
-            # 적어도 1주를 살 수 있는지 확인
+            # 매수 결정에 대해서 적어도 1주를 살 수 있는지 잔금 확인. 설정된 거래 수수료까지 고려.
             if self.balance < self.environment.get_price() * (
                 1 + self.TRADING_CHARGE) * self.min_trading_unit:
                 validity = False
@@ -131,69 +141,94 @@ class Agent:
                 validity = False
         return validity
 
+    # Agent 클래스의 함수 : 매수/매도 단위 결정 함수
+    # 정책 신경망에서 결정한 행동의 확률에 따라서 매수 또는 매도의 단위를 조정하는 함수
+    # 확률이 높을수록 매수 또는 매도하는 단위를 크게 정해준다.
     def decide_trading_unit(self, confidence):
         if np.isnan(confidence):
             return self.min_trading_unit
-        added_traiding = max(min(
+        added_trading = max(min(
             int(confidence * (self.max_trading_unit - self.min_trading_unit)),
             self.max_trading_unit-self.min_trading_unit
         ), 0)
-        return self.min_trading_unit + added_traiding
+        return self.min_trading_unit + added_trading
 
+    # Agent 클래스의 함수 : 투자 행동 수행 함수 (행동 준비)
+    # 인자로 받은 action : 탐험 또는 정책 신경망을 통해 결정한 행동으로 매수와 매도를 의미하는 0 또는 1의 값
+    # confidence : 정책 신경망을 통해 결정한 경우 결정한 행동에 대한 소프트맥스 확률 값.
     def act(self, action, confidence):
-        if not self.validate_action(action):
-            action = Agent.ACTION_HOLD
+        if not self.validate_action(action):    # 이 행동을 할 수 있는지 확인
+            action = Agent.ACTION_HOLD      # 할 수 없으면 관망
 
-        # 환경에서 현재 가격 얻기
+        # 환경 객체에서 현재의 주가 받아오기
+        # 이 가격은 매수 금액, 매도 금액, 포트폴리오 가치를 계산할 때 사용됨.
         curr_price = self.environment.get_price()
 
-        # 즉시 보상 초기화
+        # 즉시 보상 초기화. 에이전트가 행동을 할 때마다 결정되기 때문에.
         self.immediate_reward = 0
 
+        # Agent 클래스의 함수 : 투자 행동 수행 함수 (매수)
         # 매수
         if action == Agent.ACTION_BUY:
-            # 매수할 단위를 판단
+            # 매수할 단위(살 주식 수)를 판단
             trading_unit = self.decide_trading_unit(confidence)
-            balance = self.balance - curr_price * (1 + self.TRADING_CHARGE) * trading_unit
+            balance = self.balance - curr_price * (1 + self.TRADING_CHARGE) * trading_unit  # 매수 후 잔금 확인
             # 보유 현금이 모자랄 경우 보유 현금으로 가능한 만큼 최대한 매수
             if balance < 0:
+                # 결정한 매수 단위가 최대 단일 거래 단위를 넘어가면 최대 단일 거래 단위로 제한하고
+                # 최소 거래 단위보다 최소한 1주를 매수하도록 한다.
                 trading_unit = max(min(
                     int(self.balance / (
                         curr_price * (1 + self.TRADING_CHARGE))), self.max_trading_unit),
                     self.min_trading_unit
                 )
-            # 수수료를 적용하여 총 매수 금액 산정
+            # 매수할 단위에 수수료를 적용하여 총 매수 금액 산정
             invest_amount = curr_price * (1 + self.TRADING_CHARGE) * trading_unit
-            self.balance -= invest_amount  # 보유 현금을 갱신
-            self.num_stocks += trading_unit  # 보유 주식 수를 갱신
-            self.num_buy += 1  # 매수 횟수 증가
+            self.balance -= invest_amount  # 보유 현금을 갱신. 이 금액을 현재 잔금에서 뺌.
+            self.num_stocks += trading_unit  # 보유 주식 수를 갱신. 주식 보유 수를 투자 단위만큼 늘려줌.
+            self.num_buy += 1  # 매수 횟수 증가 (통계 정보)
 
+        # Agent 클래스의 함수 : 투자 행동 수행 함수 (매도 및 관망)
         # 매도
         elif action == Agent.ACTION_SELL:
             # 매도할 단위를 판단
             trading_unit = self.decide_trading_unit(confidence)
             # 보유 주식이 모자랄 경우 가능한 만큼 최대한 매도
+            # 현재 가지고 있는 주식 수보다 결정한 매도 단위가 많으면 안 되기 때문에
+            # 현재 보유 주식 수를 최대 매도 단위로 제한함.
             trading_unit = min(trading_unit, self.num_stocks)
-            # 매도
+            # 매도 금액 계산. 정해준 매도 수수료와 거래세를 모두 고려.
             invest_amount = curr_price * (
                 1 - (self.TRADING_TAX + self.TRADING_CHARGE)) * trading_unit
-            self.num_stocks -= trading_unit  # 보유 주식 수를 갱신
-            self.balance += invest_amount  # 보유 현금을 갱신
-            self.num_sell += 1  # 매도 횟수 증가
+            self.num_stocks -= trading_unit  # 보유 주식 수를 갱신. 보유 주식 수를 매도한 만큼 뺌.
+            self.balance += invest_amount  # 보유 현금을 갱신. 매도하여 현금화한 금액을 잔고에 더해 줌.
+            self.num_sell += 1  # 매도 횟수 증가 (통계를 위한 변수)
 
         # 홀딩
+        # 결정한 매수나 매도 행동을 수행할 수 없는 경우에 적용.
+        # 홀딩은 아무 것도 하지 않는 것이기 때문에 보유 주식 수나 잔고에 영향을 미치지 않는다.
+        # 대신 가격 변동은 있을 수 있으므로 포트폴리오 가치는 변동된다.
         elif action == Agent.ACTION_HOLD:
             self.num_hold += 1  # 홀딩 횟수 증가
 
+        # Agent 클래스의 함수 : 투자 행동 수행 함수 (포트폴리오 가치 갱신 및 지연 보상 판단)
         # 포트폴리오 가치 갱신
+        # 포트폴리오 가치는 잔고, 주식 보요 수, 현재 주식 가격에 의해 결정된다.
         self.portfolio_value = self.balance + curr_price * self.num_stocks
+        # 기준 포트폴리오 가치에서 현재 포트폴리오 가치의 등락률을 계산한다.
+        # (기준 포트폴리오 가치는 과거에 학습을 수행한 시점의 포트폴리오 가치를 의미)
         profitloss = (
             (self.portfolio_value - self.base_portfolio_value) / self.base_portfolio_value)
 
-        # 즉시 보상 판단
+        # 즉시 보상 판단 : 수익이 발생한 상태면 1, 그렇지 않으면 -1.
         self.immediate_reward = 1 if profitloss >= 0 else -1
 
         # 지연 보상 판단
+        # 지연 보상은 포트폴리오 가치의 등락률인 profitloss가 지연 보상 임계치인
+        # delayed_reward_threshold를 수익으로 초과하는 경우 1, 손실로 초과하는 경우 -1, 그 외엔 0
+        # 여기서는 지연 보상이 0이 아닌 경우 학습을 수행한다.
+        # 즉, 지연 보상 임계치를 초과하는 수익이 났으면 이전에 했던 행동들이 잘했다고 보고 긍정적으로 학습하고,
+        # 지연 보상 임계치를 초과하는 손실이 났으면 이전 행동들에 문제가 있다고 보고 부정적으로 학습한다.
         if profitloss > self.delayed_reward_threshold:
             delayed_reward = 1
             # 목표 수익률 달성하여 기준 포트폴리오 가치 갱신
