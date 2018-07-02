@@ -14,7 +14,7 @@ get_price() : 현재 observation에서 종가를 획득
 
 class Environment:
 
-    PRICE_IDX = 4  # 종가의 위치
+    PRICE_IDX = 4  # 종가의 위치. 5번째 열에 있어서.
 
     def __init__(self, chart_data=None):
         self.chart_data = chart_data
