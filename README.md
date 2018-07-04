@@ -17,14 +17,15 @@
 - Keras
 - PyQt5
 
-## Version
-> Not yet
-
-## Plan
-- Not yet
-
 ## Since
 > 2018.06.22 ~
 
-## Sample Image
-> Not yet
+## File Order
+1. environment
+2. agent
+3. policy_network
+4. visualizer
+5. policy_learner
+6. creon
+7. data_manager
+8. main
