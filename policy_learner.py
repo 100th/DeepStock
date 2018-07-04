@@ -25,25 +25,39 @@ class PolicyLearner:
         self.stock_code = stock_code  # 종목코드
         self.chart_data = chart_data
         self.environment = Environment(chart_data)  # 환경 객체
+        # Environment 클래스는 차트 데이터를 순서대로 읽으면서 주가, 거래량 등의 환경을 제공한다.
         # 에이전트 객체
         self.agent = Agent(self.environment,
                            min_trading_unit=min_trading_unit,
                            max_trading_unit=max_trading_unit,
                            delayed_reward_threshold=delayed_reward_threshold)
-        self.training_data = training_data  # 학습 데이터
+        self.training_data = training_data  # 학습 데이터. 학습에 사용할 특징(feature)들을 포함한다.
         self.sample = None
         self.training_data_idx = -1
-        # 정책 신경망; 입력 크기 = 학습 데이터의 크기 + 에이전트 상태 크기
+        # 정책 신경망; 입력 크기(17개) = 학습 데이터의 크기(15개) + 에이전트 상태 크기(2개)
         self.num_features = self.training_data.shape[1] + self.agent.STATE_DIM
         self.policy_network = PolicyNetwork(
             input_dim=self.num_features, output_dim=self.agent.NUM_ACTIONS, lr=lr)
         self.visualizer = Visualizer()  # 가시화 모듈
 
-    def reset(self):
+    def reset(self): # 에포크 초기화 함수 부분
         self.sample = None
-        self.training_data_idx = -1
+        self.training_data_idx = -1 # 학습 데이터를 읽어가면서 이 값은 1씩 증가
 
-    def fit(
+    def fit( #학습 함수 선언 부분. 핵심 함수이다.
+        # num_epoches : 수행할 반복 학습의 전체 횟수. (너무 크게 잡으면 학습 소요 시간이 너무 길어짐)
+        # max_memory : 배치 학습 데이터를 만들기 위해 과거 데이터를 저장할 배열.
+        # balance : 에이전트의 초기 투자 자본금을 정해주기 위한 인자
+        # discount_factor : 지연 보상이 발생했을 때 그 이전 지연 보상이 발생한 시점과 현재 지연 보상이 발생한
+        # 시점 사이에서 수행한 행동들 전체에 현재의 지연 보상을 적용한다.
+        # 과거로 갈수록 현재 지연 보상을 적용할 판단 근거가 흐려지기 때문에 먼 과걱의 행동일수록 할인 요인을
+        # 적용하여 지연 보상을 약하게 적용한다.
+        # start_epsilon : 초기 탐험 비율. 학습이 전혀 되어 있지 않은 초기에는 탐험 비율을 크게 해서
+        # 더 많은 탐험, 즉 무작위 투자를 수행하도록 해야 한다. 탐험을 통해 특정 상황에서 좋은 행동과
+        # 그렇지 않은 행동을 결정하기 위한 경험을 쌓는다.
+        # learning : 학습 유무를 정하는 boolean 값. 학습을 마치면 학습된 정책 신경망 모델이 만들어지는데,
+        # 이렇게 학습을 해서 정책 신경망 모델을 만들고자 한다면 learning을 True로,
+        # 학습된 모델을 가지고 투자 시뮬레이션만 하려 한다면 learning을 False로 준다.
         self, num_epoches=1000, max_memory=60, balance=10000000,
         discount_factor=0, start_epsilon=.5, learning=True):
         logger.info("LR: {lr}, DF: {discount_factor}, "
@@ -61,10 +75,10 @@ class PolicyLearner:
         self.visualizer.prepare(self.environment.chart_data)
 
         # 가시화 결과 저장할 폴더 준비
-        epoch_summary_dir = os.path.join(
+        epoch_summary_dir = os.path.join(   # 폴더의 경로를 변수로 저장
             settings.BASE_DIR, 'epoch_summary/%s/epoch_summary_%s' % (
                 self.stock_code, settings.timestr))
-        if not os.path.isdir(epoch_summary_dir):
+        if not os.path.isdir(epoch_summary_dir):    # 해당 경로가 없으면 이 경로를 구성하는 폴더들을 생성
             os.makedirs(epoch_summary_dir)
 
         # 에이전트 초기 자본금 설정
@@ -77,15 +91,17 @@ class PolicyLearner:
         # 학습 반복
         for epoch in range(num_epoches):
             # 에포크 관련 정보 초기화
-            loss = 0.
-            itr_cnt = 0
-            win_cnt = 0
-            exploration_cnt = 0
+            loss = 0. # 정책 신경망의 결과가 학습 데이터와 얼마나 차이가 있는지를 저장하는 변수. 학습 중 줄어드는게 좋음.
+            itr_cnt = 0 # 수행한 에포크 수를 저장
+            win_cnt = 0 # 수행한 에포크 중에서 수익이 발생한 에포크 수를 저장. 포트폴리오 가치가 초기 자본금보다 높아진 에포크 수.
+            exploration_cnt = 0 # 무작위 투자를 수행한 횟수. epsilon이 0.1이고 100번의 투자 결정이 있으면 약 10번의 무작위 투자를 함
             batch_size = 0
-            pos_learning_cnt = 0
-            neg_learning_cnt = 0
+            pos_learning_cnt = 0    # 수익이 발생하여 긍정적 지연 보상을 준 수
+            neg_learning_cnt = 0    # 손실이 발생하여 부정적 지연 보상을 준 수
 
             # 메모리 초기화
+            # 메모리 리스트에 저장하는 데이터는 샘플, 행동, 즉시보상, 정책 신경망의 출력, 포트폴리오 가치,
+            # 보유 주식 수, 탐험 위치, 학습 위치이다.
             memory_sample = []
             memory_action = []
             memory_reward = []
@@ -102,9 +118,13 @@ class PolicyLearner:
             self.reset()
 
             # 가시화 초기화
-            self.visualizer.clear([0, len(self.chart_data)])
+            self.visualizer.clear([0, len(self.chart_data)])    # 2, 3, 4번째 차트를 초기화함. x축 데이터 범위를 파라미터로
 
             # 학습을 진행할 수록 탐험 비율 감소
+            # 무작위 투자 비율인 epsilon 값을 정함
+            # fit() 함수의 인자로 넘어오는 최초 무작위 투자 비율인 start_epsilon 값에 현재 epoch 수에 학습 진행률을 곱해서 정함
+            # ex) start_epsilon이 0.3이면 첫 번째 에포크에서는 30%의 확률로 무작위 투자를 진행함.
+            # 수행할 에포크 수가 100이라고 했을 때, 50번째 에포크에서는 0.3 * (1 - 49/99) = 0.51
             if learning:
                 epsilon = start_epsilon * (1. - float(epoch) / (num_epoches - 1))
             else:
@@ -113,41 +133,50 @@ class PolicyLearner:
             while True:
                 # 샘플 생성
                 next_sample = self._build_sample()
-                if next_sample is None:
+                if next_sample is None: # 마지막까지 데이터를 다 읽은 것이므로 반복문 종료
                     break
 
                 # 정책 신경망 또는 탐험에 의한 행동 결정
+                # 매수와 매도 중 하나를 결정. 이 행동 결정은 무작위 투자 비율인 epsilon 값의 확률로 무작위로 하거나
+                # 그렇지 않은 경우 정책 신경망의 출력을 통해 결정된다. 정책 신경망의 출력은 매수를 했을 때와 매도를 했을 때의
+                # 포트폴리오 가치를 높일 확률을 의미한다. 즉 매수에 대한 정책 신경망 출력이 매도에 대한 출력보다 높으면 매수, 반대는 매도
+                # decide_action() 함수가 반환하는 값은 세 가지.
+                # 결정한 행동인 action, 결정에 대한 확신도인 confidence, 무작위 투자 유무인 exploration.
                 action, confidence, exploration = self.agent.decide_action(
                     self.policy_network, self.sample, epsilon)
 
-                # 결정한 행동을 수행하고 즉시 보상과 지연 보상 획득
+                # 결정한 행동을 수행하고 (act 함수) 즉시 보상과 지연 보상 획득 (act가 반환함)
                 immediate_reward, delayed_reward = self.agent.act(action, confidence)
 
-                # 행동 및 행동에 대한 결과를 기억
-                memory_sample.append(next_sample)
+                # 행동 및 행동에 대한 결과를 기억 (메모리에 저장)
+                memory_sample.append(next_sample) # 각 데이터를 메모리에 추가
                 memory_action.append(action)
                 memory_reward.append(immediate_reward)
                 memory_pv.append(self.agent.portfolio_value)
                 memory_num_stocks.append(self.agent.num_stocks)
-                memory = [(
+                memory = [( # 학습데이터의 샘플, 에이전트 행동, 즉시보상, 포트폴리오 가치, 보유 주식 수를 저장하는 배열
                     memory_sample[i],
                     memory_action[i],
                     memory_reward[i])
                     for i in list(range(len(memory_action)))[-max_memory:]
                 ]
-                if exploration:
+                if exploration: # 무작위 투자로 행동을 결정한 경우에 현재의 인덱스를 memory_exp_idx에 저장
                     memory_exp_idx.append(itr_cnt)
-                    memory_prob.append([np.nan] * Agent.NUM_ACTIONS)
-                else:
+                    memory_prob.append([np.nan] * Agent.NUM_ACTIONS) # memory_prob은 정책 신경망의 출력을 그대로 저장하는 배열
+                                            # 무작위 투자에서는 정책 신경망의 출력이 없기 때문에 NumPy의 Not A Number(nan) 값을 넣어줌
+                else: # 무작위 투자가 아닌 경우 정책 신경망의 출력을 그대로 저장
                     memory_prob.append(self.policy_network.prob)
+                # 메모리 변수들의 목적은 (1) 학습에서 배치 학습 데이터로 사용 (2) 가시화기에서 차트를 그릴 때 사용
 
                 # 반복에 대한 정보 갱신
-                batch_size += 1
-                itr_cnt += 1
-                exploration_cnt += 1 if exploration else 0
-                win_cnt += 1 if delayed_reward > 0 else 0
+                batch_size += 1 # 배치 크기
+                itr_cnt += 1    # 반복 카운팅 횟수
+                exploration_cnt += 1 if exploration else 0  # 무작위 투자 횟수 (탐험을 한 경우에만)
+                win_cnt += 1 if delayed_reward > 0 else 0   # 수익이 발생한 횟수를 증가시킴 (지연 보상이 0보다 큰 경우에만)
 
+                # 지연 보상이 발생한 경우 학습을 수행하는 부분
                 # 학습 모드이고 지연 보상이 존재할 경우 정책 신경망 갱신
+                # 학습 없이 메모리가 최대 크기만큼 다 찼을 경우 즉시 보상으로 지연 보상을 대체하여 학습을 진행
                 if delayed_reward == 0 and batch_size >= max_memory:
                     delayed_reward = immediate_reward
                     self.agent.base_portfolio_value = self.agent.portfolio_value
