@@ -182,23 +182,23 @@ class PolicyLearner:
                     self.agent.base_portfolio_value = self.agent.portfolio_value
                 if learning and delayed_reward != 0:
                     # 배치 학습 데이터 크기
-                    batch_size = min(batch_size, max_memory)
+                    batch_size = min(batch_size, max_memory) # 배치 데이터 크기는 memory 변수의 크기인 max_memory보다는 작아야 함
                     # 배치 학습 데이터 생성
                     x, y = self._get_batch(
                         memory, batch_size, discount_factor, delayed_reward)
-                    if len(x) > 0:
+                    if len(x) > 0:  # 긍정 학습과 부정 학습 횟수 세기
                         if delayed_reward > 0:
                             pos_learning_cnt += 1
                         else:
                             neg_learning_cnt += 1
                         # 정책 신경망 갱신
-                        loss += self.policy_network.train_on_batch(x, y)
-                        memory_learning_idx.append([itr_cnt, delayed_reward])
-                    batch_size = 0
+                        loss += self.policy_network.train_on_batch(x, y)    # 준비한 배치 데이터로 학습을 진행함
+                        memory_learning_idx.append([itr_cnt, delayed_reward])   # 학습이 진행된 인덱스를 저장함
+                    batch_size = 0  # 학습이 진행되었으니 배치 데이터 크기를 초기화함
 
             # 에포크 관련 정보 가시화
-            num_epoches_digit = len(str(num_epoches))
-            epoch_str = str(epoch + 1).rjust(num_epoches_digit, '0')
+            num_epoches_digit = len(str(num_epoches))   # 총 에포크 수의 문자열 길이를 확인함. 총 에포크 수가 1000이면 길이는 4
+            epoch_str = str(epoch + 1).rjust(num_epoches_digit, '0')    # 현재 에포크 수를 4자리 문자열로 만들어 줌. 첫 에포크는 1 -> 0001로 문자열을 자리수에 맞게 정렬
 
             self.visualizer.plot(
                 epoch_str=epoch_str, num_epoches=num_epoches, epsilon=epsilon,
@@ -207,11 +207,13 @@ class PolicyLearner:
                 exps=memory_exp_idx, learning=memory_learning_idx,
                 initial_balance=self.agent.initial_balance, pvs=memory_pv
             )
-            self.visualizer.save(os.path.join(
+            self.visualizer.save(os.path.join(  #가시화한 에포크 수행 결과를 파일로 저장함
                 epoch_summary_dir, 'epoch_summary_%s_%s.png' % (
                     settings.timestr, epoch_str)))
 
             # 에포크 관련 정보 로그 기록
+            # 총 에포크 중에서 몇 번째 에포크를 수행했는지, 탐험률, 탐험 횟수, 매수 횟수, 매도 횟수, 관망 횟수,
+            # 보유 주식 수, 포트폴리오 가치, 긍정적 학습 횟수, 부정적 학습 횟수, 학습 손실을 로그로 남긴다.
             if pos_learning_cnt + neg_learning_cnt > 0:
                 loss /= pos_learning_cnt + neg_learning_cnt
             logger.info("[Epoch %s/%s]\tEpsilon:%.4f\t#Expl.:%d/%d\t"
@@ -225,38 +227,50 @@ class PolicyLearner:
                             pos_learning_cnt, neg_learning_cnt, loss))
 
             # 학습 관련 정보 갱신
+            # 하나의 에포크 수행이 완료되었기 때문에 전체 학습에 대한 통계 정보를 갱신한다.
+            # 관리하고 있는 학습 통계 정보는 달성한 최대 포트 폴리오 가치 max_portfolio_value와 쉭이 발생한 에포크의 수 epoch_win_cnt이다.
             max_portfolio_value = max(
                 max_portfolio_value, self.agent.portfolio_value)
             if self.agent.portfolio_value > self.agent.initial_balance:
                 epoch_win_cnt += 1
+        # 여기 까지가 학습 반복 for문의 코드 블록이다.
 
         # 학습 관련 정보 로그 기록
         logger.info("Max PV: %s, \t # Win: %d" % (
             locale.currency(max_portfolio_value, grouping=True), epoch_win_cnt))
 
-    def _get_batch(self, memory, batch_size, discount_factor, delayed_reward):
-        x = np.zeros((batch_size, 1, self.num_features))
-        y = np.full((batch_size, self.agent.NUM_ACTIONS), 0.5)
+    def _get_batch(self, memory, batch_size, discount_factor, delayed_reward):  # 미니 배치 데이터 생성
+        x = np.zeros((batch_size, 1, self.num_features))    # x는 일련의 학습 데이터 및 에이전트 상태
+        # x 배열의 형태는 배치 데이터 크기, 학습 데이터 특징 크기로 2차원으로 구성됨.
+        y = np.full((batch_size, self.agent.NUM_ACTIONS), 0.5)  # y는 일련의 지연 보상
+        # y 배열의 형태는 배치 데이터 크기, 정책 신경망이 결정하는 에이전트 행동의 수. 2차원으로. 0.5 일괄적으로 채워둠.
 
         for i, (sample, action, reward) in enumerate(
                 reversed(memory[-batch_size:])):
-            x[i] = np.array(sample).reshape((-1, 1, self.num_features))
-            y[i, action] = (delayed_reward + 1) / 2
+            x[i] = np.array(sample).reshape((-1, 1, self.num_features)) # 특징벡터 지정
+            y[i, action] = (delayed_reward + 1) / 2 # 지연 보상으로 정답(레이블)을 설정하여 학습 데이터 구성
+            # 지연 보상이 1인 경우 1로, -1인 경우 0으로 레이블을 지정
             if discount_factor > 0:
-                y[i, action] *= discount_factor ** i
+                y[i, action] *= discount_factor ** i    # 할인 요인이 있을 경우
         return x, y
 
+    # 학습 데이터를 구성하는 샘플 하나를 생성하는 함수
     def _build_sample(self):
-        self.environment.observe()
-        if len(self.training_data) > self.training_data_idx + 1:
+        self.environment.observe()  # 차트 데이터의 현재 인덱스에서 다음 인덱스 데이터를 읽음
+        if len(self.training_data) > self.training_data_idx + 1:    # 학습 데이터의 다음 인덱스가 존재하는지 확인
             self.training_data_idx += 1
-            self.sample = self.training_data.iloc[self.training_data_idx].tolist()
-            self.sample.extend(self.agent.get_states())
+            self.sample = self.training_data.iloc[self.training_data_idx].tolist()  # 인덱스의 데이터를 받아와서 sample로 저장
+            self.sample.extend(self.agent.get_states())     # sample에 에이전트 상태를 15개에서 +2개하여 17개로.
             return self.sample
         return None
 
+    # 학습된 정책 신경망 모델로 주식투자 시뮬레이션을 진행
     def trade(self, model_path=None, balance=2000000):
         if model_path is None:
             return
-        self.policy_network.load_model(model_path=model_path)
+        self.policy_network.load_model(model_path=model_path)   # 학습된 신경망 모델을 정책 신경망 객체의 load_model로 적용
         self.fit(balance=balance, num_epoches=1, learning=False)
+        # 이 함수는 학습된 정책 신경망으로 투자 시뮬레이션을 하는 것이므로 반복 투자를 할 필요가 없기 때문에
+        # 총 에포크 수 num_epoches를 1로 주고, learning 인자에 False를 넘겨준다.
+        # 이렇게 하면 학습을 진행하지 않고 정책 신경망에만 의존하여 투자 시뮬레이션을 진행한다.
+        # 물론 무작위 투자는 수행하지 않음.
