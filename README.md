@@ -29,3 +29,9 @@
 6. creon
 7. data_manager
 8. main
+9. main_notraining
+10. agent_custom
+11. policy_network_custom
+12. policy_network_dnn
+13. data_manager_custom
+14. main_custom
