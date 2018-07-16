@@ -86,4 +86,3 @@ def get_time_str():
     timestr = datetime.datetime.fromtimestamp(
         int(time.time())).strftime(FORMAT_DATETIME)
     return timestr
-#
