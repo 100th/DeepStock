@@ -11,7 +11,7 @@ from policy_learner import PolicyLearner
 
 
 if __name__ == '__main__':
-    stock_code = '005930'  # 삼성전자
+    stock_code = '000810'  # 삼성화재
 
     # 로그 기록
     log_dir = os.path.join(settings.BASE_DIR, 'logs/%s' % stock_code)
